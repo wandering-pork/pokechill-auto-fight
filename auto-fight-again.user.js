@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Pokechill Auto Fight Again
 // @namespace    pokechill-automation
-// @version      2.0
-// @description  Auto Fight Again with optional ability/move target — stops when the target is learned.
+// @version      2.1
+// @description  Auto Fight Again with ability target, collapsible/draggable panel, and notes tab.
 // @match        https://play-pokechill.github.io/*
 // @grant        none
 // @run-at       document-idle
@@ -20,6 +20,13 @@
   let refightCount = parseInt(localStorage.getItem('pca-refight-count') || '0');
   let delayMs = parseInt(localStorage.getItem('pca-delay-ms') || String(DEFAULT_DELAY_MS));
   let targetAbility = localStorage.getItem('pca-target-ability') || '';
+  let collapsed = localStorage.getItem('pca-collapsed') === '1';
+  let activeTab = localStorage.getItem('pca-tab') || 'fight';
+  let notes = localStorage.getItem('pca-notes') || '';
+
+  // Drag state
+  let dragging = false;
+  let dragOffX = 0, dragOffY = 0;
 
   // --- Helpers ---
   function isVisible(el) {
@@ -36,35 +43,20 @@
     localStorage.setItem('pca-target-ability', targetAbility);
   }
 
-  /**
-   * Scans #area-end-moves-title for the target ability/move name.
-   * That element contains text like "M. Manectric now has Flamethrower!"
-   * Falls back to the full #area-end container if the specific element is missing.
-   * Returns true if the target is found and the element is currently visible.
-   */
   function targetAbilityFound() {
     if (!targetAbility) return false;
-
     const movesTitle = document.getElementById('area-end-moves-title');
-    // Use the specific element if it exists and is visible (display !== 'none')
     if (movesTitle) {
-      const style = window.getComputedStyle(movesTitle);
-      if (style.display !== 'none') {
+      if (window.getComputedStyle(movesTitle).display !== 'none') {
         return movesTitle.textContent.toLowerCase().includes(targetAbility.toLowerCase());
       }
-      // Element exists but is hidden — ability was not learned this round
       return false;
     }
-
-    // Fallback: scan the whole end screen
     const endScreen = document.getElementById('area-end');
     if (!endScreen) return false;
     return endScreen.textContent.toLowerCase().includes(targetAbility.toLowerCase());
   }
 
-  /**
-   * Show a highlighted notification banner when the target ability is found.
-   */
   function showFoundNotification() {
     const existing = document.getElementById('pca-found-banner');
     if (existing) existing.remove();
@@ -95,7 +87,6 @@
     banner.addEventListener('click', () => banner.remove());
     document.body.appendChild(banner);
 
-    // Also flash the panel status
     const statusEl = document.getElementById('pca-status');
     if (statusEl) {
       statusEl.style.color = '#27ae60';
@@ -103,7 +94,7 @@
     }
   }
 
-  // --- UI Panel ---
+  // --- Panel ---
   const panel = document.createElement('div');
   panel.id = 'pca-panel';
   panel.style.cssText = `
@@ -113,105 +104,205 @@
     z-index: 99999;
     background: #1a1a1a;
     color: #e0e0e0;
-    padding: 10px 14px;
     border-radius: 8px;
     font-size: 12px;
     font-family: monospace;
     border: 1px solid #444;
-    min-width: 200px;
+    min-width: 210px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.5);
     user-select: none;
   `;
 
-  panel.innerHTML = `
-    <div style="font-weight:bold; margin-bottom:8px; color:#aaa; letter-spacing:1px;">⚔ AUTO FIGHT</div>
-
-    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; margin-bottom:8px;">
-      <input type="checkbox" id="pca-toggle" ${enabled ? 'checked' : ''}>
-      <span id="pca-status">${enabled ? 'Enabled' : 'Paused'}</span>
-    </label>
-
-    <div style="margin-bottom:8px;">
-      Delay:
-      <input
-        id="pca-delay"
-        type="number"
-        min="0"
-        max="30000"
-        step="500"
-        value="${delayMs}"
-        style="width:60px; background:#333; color:#eee; border:1px solid #555; border-radius:4px; padding:2px 4px; font-size:12px;"
-      > ms
-    </div>
-
-    <div style="margin-bottom:4px; color:#aaa;">🎯 Stop when ability learned:</div>
-    <input
-      id="pca-ability"
-      type="text"
-      placeholder="e.g. Flamethrower"
-      value="${targetAbility}"
-      style="
-        width: 100%;
-        box-sizing: border-box;
-        background: #333;
-        color: #eee;
-        border: 1px solid #555;
-        border-radius: 4px;
-        padding: 3px 6px;
-        font-size: 12px;
-        font-family: monospace;
-        margin-bottom: 8px;
-      "
-    >
-
-    <div style="color:#888;">
-      Refights: <span id="pca-count" style="color:#7ec8e3;">${refightCount}</span>
-    </div>
-    <div style="color:#555; margin-top:6px; font-size:10px;">Alt+Q: toggle on/off</div>
-  `;
-
-  function mountPanel() {
-    if (document.body) {
-      document.body.appendChild(panel);
-    } else {
-      document.addEventListener('DOMContentLoaded', () => document.body.appendChild(panel));
-    }
+  function tabStyle(name) {
+    const active = activeTab === name;
+    return `
+      flex:1; padding:5px 0; border:none; cursor:pointer;
+      font-size:11px; font-family:monospace;
+      background:${active ? '#1a1a1a' : '#222'};
+      color:${active ? '#7ec8e3' : '#666'};
+      border-bottom:${active ? '2px solid #7ec8e3' : '2px solid transparent'};
+    `;
   }
-  mountPanel();
 
-  // --- UI Event Listeners ---
-  document.addEventListener('change', (e) => {
-    if (e.target.id === 'pca-toggle') {
-      enabled = e.target.checked;
-      const statusEl = document.getElementById('pca-status');
-      if (statusEl) {
-        statusEl.textContent = enabled ? 'Enabled' : 'Paused';
-        statusEl.style.color = '';
-      }
+  function renderPanel() {
+    const bodyHtml = collapsed ? '' : `
+      <div style="display:flex; border-bottom:1px solid #333;">
+        <button id="pca-tab-fight" style="${tabStyle('fight')}">Fight</button>
+        <button id="pca-tab-notes" style="${tabStyle('notes')}">Notes</button>
+      </div>
+
+      ${activeTab === 'fight' ? `
+        <div style="padding:10px 14px;">
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer; margin-bottom:8px;">
+            <input type="checkbox" id="pca-toggle" ${enabled ? 'checked' : ''}>
+            <span id="pca-status">${enabled ? 'Enabled' : 'Paused'}</span>
+          </label>
+
+          <div style="margin-bottom:8px;">
+            Delay:
+            <input
+              id="pca-delay"
+              type="number" min="0" max="30000" step="500"
+              value="${delayMs}"
+              style="width:60px; background:#333; color:#eee; border:1px solid #555; border-radius:4px; padding:2px 4px; font-size:12px;"
+            > ms
+          </div>
+
+          <div style="margin-bottom:4px; color:#aaa;">🎯 Stop when ability learned:</div>
+          <input
+            id="pca-ability"
+            type="text"
+            placeholder="e.g. Flamethrower"
+            value="${targetAbility}"
+            style="
+              width:100%; box-sizing:border-box;
+              background:#333; color:#eee;
+              border:1px solid #555; border-radius:4px;
+              padding:3px 6px; font-size:12px; font-family:monospace;
+              margin-bottom:8px;
+            "
+          >
+
+          <div style="color:#888;">
+            Refights: <span id="pca-count" style="color:#7ec8e3;">${refightCount}</span>
+          </div>
+          <div style="color:#555; margin-top:6px; font-size:10px;">Alt+Q: toggle on/off</div>
+        </div>
+      ` : ''}
+
+      ${activeTab === 'notes' ? `
+        <div style="padding:8px 10px;">
+          <textarea
+            id="pca-notes-area"
+            placeholder="Notes..."
+            style="
+              width:100%; box-sizing:border-box;
+              height:100px; resize:vertical;
+              background:#252525; color:#ccc;
+              border:1px solid #444; border-radius:4px;
+              padding:5px; font-size:11px; font-family:monospace;
+              user-select:text;
+            "
+          >${notes}</textarea>
+        </div>
+      ` : ''}
+    `;
+
+    panel.innerHTML = `
+      <div id="pca-header" style="
+        display:flex; align-items:center; justify-content:space-between;
+        padding:7px 10px;
+        background:#252525;
+        border-radius:${collapsed ? '8px' : '8px 8px 0 0'};
+        cursor:grab;
+        ${collapsed ? '' : 'border-bottom:1px solid #333;'}
+      ">
+        <span style="font-weight:bold; color:#aaa; letter-spacing:1px; font-size:11px;">⚔ AUTO FIGHT</span>
+        <button id="pca-collapse-btn" title="Collapse/expand" style="
+          background:none; border:none; color:#888;
+          cursor:pointer; font-size:12px; padding:0 2px; line-height:1;
+        ">${collapsed ? '▲' : '▼'}</button>
+      </div>
+      ${bodyHtml}
+    `;
+
+    attachEvents();
+  }
+
+  function attachEvents() {
+    // Collapse
+    document.getElementById('pca-collapse-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      collapsed = !collapsed;
+      localStorage.setItem('pca-collapsed', collapsed ? '1' : '0');
+      renderPanel();
+    });
+
+    // Tabs
+    const tabFight = document.getElementById('pca-tab-fight');
+    const tabNotes = document.getElementById('pca-tab-notes');
+    if (tabFight) tabFight.addEventListener('click', () => { activeTab = 'fight'; localStorage.setItem('pca-tab', 'fight'); renderPanel(); });
+    if (tabNotes) tabNotes.addEventListener('click', () => { activeTab = 'notes'; localStorage.setItem('pca-tab', 'notes'); renderPanel(); });
+
+    // Fight controls
+    const toggle = document.getElementById('pca-toggle');
+    if (toggle) {
+      toggle.addEventListener('change', () => {
+        enabled = toggle.checked;
+        const statusEl = document.getElementById('pca-status');
+        if (statusEl) { statusEl.textContent = enabled ? 'Enabled' : 'Paused'; statusEl.style.color = ''; }
+      });
     }
-    if (e.target.id === 'pca-delay') {
-      const val = parseInt(e.target.value);
-      if (!isNaN(val) && val >= 0) saveDelay(val);
+
+    const delayInput = document.getElementById('pca-delay');
+    if (delayInput) {
+      delayInput.addEventListener('change', () => {
+        const val = parseInt(delayInput.value);
+        if (!isNaN(val) && val >= 0) saveDelay(val);
+      });
     }
+
+    const abilityInput = document.getElementById('pca-ability');
+    if (abilityInput) {
+      abilityInput.addEventListener('input', () => saveTargetAbility(abilityInput.value));
+    }
+
+    // Notes — prevent drag when interacting with textarea
+    const notesArea = document.getElementById('pca-notes-area');
+    if (notesArea) {
+      notesArea.addEventListener('mousedown', (e) => e.stopPropagation());
+      notesArea.addEventListener('input', () => {
+        notes = notesArea.value;
+        localStorage.setItem('pca-notes', notes);
+      });
+    }
+
+    // Drag — attach to header
+    const header = document.getElementById('pca-header');
+    header.addEventListener('mousedown', (e) => {
+      if (e.target.id === 'pca-collapse-btn') return;
+      dragging = true;
+      const rect = panel.getBoundingClientRect();
+      dragOffX = e.clientX - rect.left;
+      dragOffY = e.clientY - rect.top;
+      // Switch from bottom/right to top/left for free positioning
+      panel.style.bottom = '';
+      panel.style.right = '';
+      panel.style.top = rect.top + 'px';
+      panel.style.left = rect.left + 'px';
+      header.style.cursor = 'grabbing';
+    });
+  }
+
+  // Global drag tracking
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    panel.style.left = (e.clientX - dragOffX) + 'px';
+    panel.style.top = (e.clientY - dragOffY) + 'px';
   });
 
-  // Save ability target on every keystroke (input event)
-  document.addEventListener('input', (e) => {
-    if (e.target.id === 'pca-ability') {
-      saveTargetAbility(e.target.value);
-    }
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    const header = document.getElementById('pca-header');
+    if (header) header.style.cursor = 'grab';
   });
 
-  // Keyboard shortcut: Alt+Q to pause/resume
+  // Alt+Q shortcut
   document.addEventListener('keydown', (e) => {
     if (e.altKey && e.key === 'q') {
       const toggle = document.getElementById('pca-toggle');
-      if (toggle) {
-        toggle.checked = !toggle.checked;
-        toggle.dispatchEvent(new Event('change'));
-      }
+      if (toggle) { toggle.checked = !toggle.checked; toggle.dispatchEvent(new Event('change')); }
     }
   });
+
+  // Mount
+  if (document.body) {
+    document.body.appendChild(panel);
+    renderPanel();
+  } else {
+    document.addEventListener('DOMContentLoaded', () => { document.body.appendChild(panel); renderPanel(); });
+  }
 
   // --- Core Detection ---
   const observer = new MutationObserver(() => {
@@ -222,15 +313,9 @@
       clicked = true;
 
       setTimeout(() => {
-        // Re-check in case user paused during the delay
-        if (!enabled) {
-          clicked = false;
-          return;
-        }
+        if (!enabled) { clicked = false; return; }
 
-        // --- Ability target check ---
         if (targetAbility && targetAbilityFound()) {
-          // Pause auto-fight and notify user
           enabled = false;
           const toggle = document.getElementById('pca-toggle');
           if (toggle) toggle.checked = false;
@@ -239,7 +324,6 @@
           return;
         }
 
-        // --- Fight again ---
         btn.click();
         refightCount++;
         const countEl = document.getElementById('pca-count');
@@ -258,5 +342,5 @@
     attributeFilter: ['style', 'class'],
   });
 
-  console.log('[PCA] Auto Fight Again v2.0 loaded. Alt+Q to toggle.');
+  console.log('[PCA] Auto Fight Again v2.1 loaded. Alt+Q to toggle.');
 })();
