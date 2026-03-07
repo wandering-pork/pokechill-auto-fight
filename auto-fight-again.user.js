@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Pokechill Auto Fight Again
 // @namespace    pokechill-automation
-// @version      2.1
-// @description  Auto Fight Again with ability target, collapsible/draggable panel, and notes tab.
+// @version      2.2
+// @description  Auto Fight Again with ability target, marked Pokemon viewer, collapsible/draggable panel, and notes tab.
 // @match        https://play-pokechill.github.io/*
 // @grant        none
 // @run-at       document-idle
@@ -55,6 +55,16 @@
     const endScreen = document.getElementById('area-end');
     if (!endScreen) return false;
     return endScreen.textContent.toLowerCase().includes(targetAbility.toLowerCase());
+  }
+
+  function getMarkedPokemon() {
+    const names = [];
+    document.querySelectorAll('[data-pkmn-editor]').forEach(el => {
+      if (el.querySelector('strong svg')) {
+        names.push(el.getAttribute('data-pkmn-editor'));
+      }
+    });
+    return names;
   }
 
   function showFoundNotification() {
@@ -128,6 +138,7 @@
     const bodyHtml = collapsed ? '' : `
       <div style="display:flex; border-bottom:1px solid #333;">
         <button id="pca-tab-fight" style="${tabStyle('fight')}">Fight</button>
+        <button id="pca-tab-marked" style="${tabStyle('marked')}">Marked</button>
         <button id="pca-tab-notes" style="${tabStyle('notes')}">Notes</button>
       </div>
 
@@ -169,6 +180,24 @@
           <div style="color:#555; margin-top:6px; font-size:10px;">Alt+Q: toggle on/off</div>
         </div>
       ` : ''}
+
+      ${activeTab === 'marked' ? (() => {
+        const names = getMarkedPokemon();
+        const rows = names.length
+          ? names.map(n => `<div style="padding:2px 0; color:#c39bd3; text-transform:capitalize;">${n}</div>`).join('')
+          : '<div style="color:#555; font-style:italic;">None found on page.</div>';
+        return `
+          <div style="padding:8px 10px;">
+            <div style="color:#aaa; margin-bottom:6px; font-size:11px;">Pokemon with marker icon on this page:</div>
+            <div id="pca-marked-list" style="max-height:120px; overflow-y:auto; margin-bottom:6px;">${rows}</div>
+            <button id="pca-marked-refresh" style="
+              width:100%; padding:4px; background:#333; color:#aaa;
+              border:1px solid #555; border-radius:4px;
+              font-size:11px; font-family:monospace; cursor:pointer;
+            ">Refresh</button>
+          </div>
+        `;
+      })() : ''}
 
       ${activeTab === 'notes' ? `
         <div style="padding:8px 10px;">
@@ -220,9 +249,24 @@
 
     // Tabs
     const tabFight = document.getElementById('pca-tab-fight');
+    const tabMarked = document.getElementById('pca-tab-marked');
     const tabNotes = document.getElementById('pca-tab-notes');
     if (tabFight) tabFight.addEventListener('click', () => { activeTab = 'fight'; localStorage.setItem('pca-tab', 'fight'); renderPanel(); });
+    if (tabMarked) tabMarked.addEventListener('click', () => { activeTab = 'marked'; localStorage.setItem('pca-tab', 'marked'); renderPanel(); });
     if (tabNotes) tabNotes.addEventListener('click', () => { activeTab = 'notes'; localStorage.setItem('pca-tab', 'notes'); renderPanel(); });
+
+    const refreshBtn = document.getElementById('pca-marked-refresh');
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', () => {
+        const names = getMarkedPokemon();
+        const list = document.getElementById('pca-marked-list');
+        if (list) {
+          list.innerHTML = names.length
+            ? names.map(n => `<div style="padding:2px 0; color:#c39bd3; text-transform:capitalize;">${n}</div>`).join('')
+            : '<div style="color:#555; font-style:italic;">None found on page.</div>';
+        }
+      });
+    }
 
     // Fight controls
     const toggle = document.getElementById('pca-toggle');
@@ -342,5 +386,5 @@
     attributeFilter: ['style', 'class'],
   });
 
-  console.log('[PCA] Auto Fight Again v2.1 loaded. Alt+Q to toggle.');
+  console.log('[PCA] Auto Fight Again v2.2 loaded. Alt+Q to toggle.');
 })();
